@@ -1,0 +1,4 @@
+numpy==1.23.5
+tensorflow==2.12.0
+tensorflow_datasets==4.9.1
+tensorflow_text==2.12.0
