@@ -8,8 +8,7 @@ import tensorflow_text
 
 def load_pten_data(data_name="ted_hrlr_translate/pt_to_en"):
     examples, metadata = tfds.load(data_name, with_info=True, as_supervised=True)
-
-    return examples["train"], examples["validation"]
+    return examples["train"], examples["validation"], examples["test"]
 
 
 def load_pten_tokenizers(model_name="ted_hrlr_translate_pt_en_converter"):

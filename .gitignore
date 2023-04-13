@@ -1,3 +1,5 @@
 __pycache__/
 
 ted_hrlr_translate_pt_en_*
+*.detok.txt
+tf/trained_models
