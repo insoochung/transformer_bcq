@@ -38,11 +38,12 @@ def prepare_batch(pt, en, tokenizers, max_tokens=128):
 
 def make_batches(ds, tokenizers, buffer_size=20000, batch_size=64, max_tokens=128):
     return (
-        ds.shuffle(buffer_size)
+        ds
+        .prefetch(buffer_size=tf.data.AUTOTUNE)
+        .shuffle(buffer_size)
         .batch(batch_size)
         .map(
             lambda pt, en: prepare_batch(pt, en, tokenizers, max_tokens),
             tf.data.AUTOTUNE,
         )
-        .prefetch(buffer_size=tf.data.AUTOTUNE)
     )
