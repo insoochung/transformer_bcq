@@ -39,7 +39,6 @@ def test_model(test_examples, tokenizers, model, ckpt_dir):
     refs = []
     hyps = []
     with open(output_filepath, "w") as out_f, open(ref_filepath, "w") as ref_f:
-        assert 0
         for pt_example, en_example in test_examples:
             en_output, _, _ = translator(pt_example)
             pt_example = pt_example.numpy().decode('utf-8').strip()
@@ -47,8 +46,8 @@ def test_model(test_examples, tokenizers, model, ckpt_dir):
             en_example = en_example.numpy().decode('utf-8').strip()
             out_f.write(f"{en_output}\n")
             ref_f.write(f"{en_example}\n")
-            refs.append([[tokenizers.en.tokenize(en_example)]])
-            hyps.append([tokenizers.en.tokenize(en_output)])
+            refs.append([en_example.split()])
+            hyps.append(en_output.split())
             print(f"PT: {pt_example}\nEN: {en_example}\nOUT: {en_output}")
     print(
         f"Testing, results and references are written to {output_filepath} and {ref_filepath}"
@@ -57,7 +56,7 @@ def test_model(test_examples, tokenizers, model, ckpt_dir):
     return bleu_score
 
 
-def train(hparams: Dict):
+def train(hparams: Dict, epochs=30):
     test_examples, tokenizers, train_batches, val_batches = prepare_dataset()
 
     model = prepare_model(hparams, tokenizers)
@@ -81,19 +80,20 @@ def train(hparams: Dict):
     print(f"Training, checkpoints will be saved to {ckpt_dir}")
 
     latest = tf.train.latest_checkpoint(ckpt_dir)
-    initial_epoch = None
+    initial_epoch = 0
     if latest:
         model.load_weights(latest)
         initial_epoch = int(latest[-4:])
         print(f"Training will initialize from previous checkpoint: {latest}")
 
-    model.fit(
-        train_batches,
-        initial_epoch=initial_epoch,
-        epochs=30,
-        validation_data=val_batches,
-        callbacks=[ckpt_callback],
-    )
+    if initial_epoch < epochs:
+        model.fit(
+            train_batches,
+            initial_epoch=initial_epoch,
+            epochs=epochs,
+            validation_data=val_batches,
+            callbacks=[ckpt_callback],
+        )
 
     bleu_score = test_model(test_examples, tokenizers, model, ckpt_dir)
     print(f"Test BLEU: {bleu_score}")

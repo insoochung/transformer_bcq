@@ -1,5 +1,6 @@
-numpy==1.23.5
-tensorflow==2.11.0
+numpy>=1.21
+tensorflow==2.11
 tensorflow_datasets==4.8
-tensorflow_text==2.11.0
-waymo-open-dataset-tf-2.11.0
+tensorflow_text==2.11
+waymo-open-dataset-tf-2.11.0==1.5
+nltk>=3.8
