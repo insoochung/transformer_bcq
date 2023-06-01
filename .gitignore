@@ -3,3 +3,4 @@ __pycache__/
 ted_hrlr_translate_pt_en_*
 *.detok.txt
 trained_models
+.DS_Store
