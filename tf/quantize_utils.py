@@ -1,27 +1,28 @@
-import copy
-
 import tensorflow as tf
 import numpy as np
 
+from transformer.model import Encoder, Decoder
+
 
 def collect_transformer_weights(model):
+    """Ad hoc function for retrieving layer weights from a Transformer object"""
     ws = {}
     encoder = model.encoder
     decoder = model.decoder
 
     ws["encoder/pos_embedding/embedding"] = encoder.pos_embedding.embedding.get_weights()
     for i, layer in enumerate(encoder.enc_layers):
-        ws[f"encoder/layer_{i}/self_attention/mha/"] = layer.self_attention.mha.get_weights()
-        ws[f"encoder/layer_{i}/self_attention/mha/layernorm/"] = layer.self_attention.layernorm.get_weights()
+        ws[f"encoder/layer_{i}/self_attention/mha"] = layer.self_attention.mha.get_weights()
+        ws[f"encoder/layer_{i}/self_attention/layernorm"] = layer.self_attention.layernorm.get_weights()
         ws[f"encoder/layer_{i}/ffn/seq"] = layer.ffn.seq.get_weights()
         ws[f"encoder/layer_{i}/ffn/layer_norm"] = layer.ffn.layer_norm.get_weights()
 
     ws["decoder/pos_embedding/embedding"] = decoder.pos_embedding.embedding.get_weights()
     for i, layer in enumerate(decoder.dec_layers):
-        ws[f"decoder/layer_{i}/causal_self_attention/mha/"] = layer.causal_self_attention.mha.get_weights()
-        ws[f"decoder/layer_{i}/causal_self_attention/mha/layernorm/"] = layer.causal_self_attention.layernorm.get_weights()
-        ws[f"decoder/layer_{i}/cross_attention/mha/"] = layer.cross_attention.mha.get_weights()
-        ws[f"decoder/layer_{i}/cross_attention/mha/layernorm/"] = layer.cross_attention.layernorm.get_weights()
+        ws[f"decoder/layer_{i}/causal_self_attention/mha"] = layer.causal_self_attention.mha.get_weights()
+        ws[f"decoder/layer_{i}/causal_self_attention/layernorm"] = layer.causal_self_attention.layernorm.get_weights()
+        ws[f"decoder/layer_{i}/cross_attention/mha"] = layer.cross_attention.mha.get_weights()
+        ws[f"decoder/layer_{i}/cross_attention/layernorm"] = layer.cross_attention.layernorm.get_weights()
         ws[f"decoder/layer_{i}/ffn/seq"] = layer.ffn.seq.get_weights()
         ws[f"decoder/layer_{i}/ffn/layer_norm"] = layer.ffn.layer_norm.get_weights()
 
@@ -40,14 +41,15 @@ def collect_transformer_weights(model):
 
 
 def quantize_transformer_weights(ws):
+    """Quantize FP transformer weights (except bias and layer norm parameters)"""
     qs = {}
     for k, _ws in ws.items():
         transpose = False
         if "final_layer" in k:
             transpose = True # final_layer is transposed {before quantization, after dequantization}
         
-        print(k)
-        print(f"ws: {[_w.shape for _w in _ws]}")
+        print(f"Weight: {k}")
+        print(f"- weights shape: {[_w.shape for _w in _ws]}")
 
         if "layer" in k and "norm" in k:
             qs[k] = _ws # layer norm's are not quantized
@@ -60,11 +62,39 @@ def quantize_transformer_weights(ws):
                 continue
             _qs.append(QuantizedWeights(_w, transpose=transpose))
         qs[k] = _qs
-        print(f"qs: {[_q.shape for _q in _qs]}")
-    assert 0
+        print(f"- quantized weights shape: {[_q.shape for _q in _qs]}")
+    if set(ws.keys()) != set(qs.keys()):
+        raise RuntimeError("Layer weight names and quantized weight names do not match.")
 
-def apply_quantized_weights(model, ws, qs):
-    assert 0
+    return qs
+
+def get_nested_layer(layer, layer_name):
+    """Retrieve bottom-most layer per given name"""
+    if len(layer_name) == 0:
+        return layer
+    pieces = layer_name.split("/")
+    next_layer_name, remaining_layers_names = pieces[0], "/".join(pieces[1:])
+    if next_layer_name.startswith("layer_") and next_layer_name != "layer_norm":
+        layer_num = int(next_layer_name[6:])
+        if isinstance(layer, Encoder):
+            next_layer = layer.enc_layers[layer_num]
+        elif isinstance(layer, Decoder):
+            next_layer = layer.dec_layers[layer_num]
+        else:
+            raise RuntimeError(f"Unexpected layer type '{type(layer)}', code was expecting Encoder or Decoder.")
+    else:
+        next_layer = getattr(layer, next_layer_name)
+    return get_nested_layer(next_layer, remaining_layers_names)
+
+def sync_fp_weights_with_quantized_values(model, qs):
+    """Model weights are set as dequantized alphas and bits"""
+    for key in qs.keys():
+        layer = get_nested_layer(model, key)
+        deq_weights = [q.dequantize() if isinstance(q, QuantizedWeights) else q for q in qs[key]]
+        if len(layer.get_weights()) != len(deq_weights):
+            raise RuntimeError(f"Layer '{key}' show incorrect number of weights: {len(layer.get_weights())} != {len(deq_weights)}")
+        layer.set_weights(deq_weights)
+        print(f"Weights for '{key}' set to quantized-dequantized equivalent.")
 
 
 class QuantizedWeights():
@@ -88,7 +118,7 @@ class QuantizedWeights():
         self.quantize(_weight)
 
     def quantize(self, weight):
-        # Quantize
+        """Quantize FP weights to bits and alphas"""
         num_rows, num_cols = weight.shape
         num_bits = self.num_bits
         if tf.is_tensor(weight):
@@ -121,9 +151,8 @@ class QuantizedWeights():
         
 
     def dequantize(self):
+        """Dequantized quantized weights and return FP weights"""
         weight = np.zeros(self.w_2d_shape)
-        
-        # Dequantize
         bits_unpacked = np.unpackbits(self.bits, axis=1) * 2. - 1.
         for q in range(self.num_bits):
             weight += bits_unpacked[:,:,q] * np.expand_dims(self.alphas[:, q], -1) # [R, C] * [R, 1] = [R, C]
@@ -145,9 +174,8 @@ class CheckpointQuantizer(tf.keras.callbacks.ModelCheckpoint):
         self.epochs_since_last_save += 1
         ws = collect_transformer_weights(self.model)
         qs = quantize_transformer_weights(ws)
-        apply_quantized_weights(self.model, ws, qs)
-        assert 0
+        sync_fp_weights_with_quantized_values(self.model, qs)
         self._save_model(epoch=epoch, batch=None, logs=logs)
 
-    def _save_model(self):
-        pass
+    def _save_model(self, epoch, batch, logs):
+        assert 0

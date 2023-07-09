@@ -105,7 +105,7 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
         model.load_weights(latest)
 
         callback_cls = CheckpointQuantizer
-        print(f"Quantization. Checkpoints will be saved to '{ckpt_dir}'")
+        print(f"Quantization - checkpoints will be saved to '{ckpt_dir}'")
 
     ckpt_callback = callback_cls(
         filepath=os.path.join(ckpt_dir, "pten.ckpt.ep{epoch:04d}"),
