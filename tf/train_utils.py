@@ -87,9 +87,11 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
         print(f"Pre-training. Checkpoints will be saved to '{ckpt_dir}'")
     else:
         ckpt_dir = quantize_dir
-        # Continue from last quantized checkpoint
+        # TODO: If previous ckpt from quantization exists - continue from last quantized checkpoint.
         latest = tf.train.latest_checkpoint(quantize_dir)
-        if not latest:  # Continue from pretrained weigths
+        
+        # If this is the start of quantization - continue from pretrained weigths
+        if not latest:
             latest = tf.train.latest_checkpoint(pretrain_dir)
             if not latest:
                 raise RuntimeError(
@@ -115,13 +117,15 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
         mode="max",
         save_best_only=True,
     )
+    if quantize:
+        ckpt_callback.validation_data = val_batches
 
     if initial_epoch < epochs:
         model.fit(
             train_batches,
             initial_epoch=initial_epoch,
             epochs=epochs,
-            steps_per_epoch=2,  # TODO: Change to 800
+            steps_per_epoch=800, # NOTE: pNR equivalent
             validation_data=val_batches,
             callbacks=[ckpt_callback],
         )

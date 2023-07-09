@@ -1,8 +1,12 @@
-import tensorflow as tf
+import os
+
 import numpy as np
 
-from transformer.model import Encoder, Decoder
+import tensorflow as tf
+from tensorflow.python.platform import tf_logging as logging
+from keras.utils import io_utils
 
+from transformer.model import Encoder, Decoder
 
 def collect_transformer_weights(model):
     """Ad hoc function for retrieving layer weights from a Transformer object"""
@@ -48,8 +52,8 @@ def quantize_transformer_weights(ws):
         if "final_layer" in k:
             transpose = True # final_layer is transposed {before quantization, after dequantization}
         
-        print(f"Weight: {k}")
-        print(f"- weights shape: {[_w.shape for _w in _ws]}")
+        io_utils.print_msg(f"Weight: {k}")
+        io_utils.print_msg(f"- weights shape: {[_w.shape for _w in _ws]}")
 
         if "layer" in k and "norm" in k:
             qs[k] = _ws # layer norm's are not quantized
@@ -62,14 +66,14 @@ def quantize_transformer_weights(ws):
                 continue
             _qs.append(QuantizedWeights(_w, transpose=transpose))
         qs[k] = _qs
-        print(f"- quantized weights shape: {[_q.shape for _q in _qs]}")
+        io_utils.print_msg(f"- quantized weights shape: {[_q.shape for _q in _qs]}")
     if set(ws.keys()) != set(qs.keys()):
         raise RuntimeError("Layer weight names and quantized weight names do not match.")
 
     return qs
 
-def get_nested_layer(layer, layer_name):
-    """Retrieve bottom-most layer per given name"""
+def get_transformer_layer(layer, layer_name):
+    """Retrieve bottom-most layer per given slash separated layer names"""
     if len(layer_name) == 0:
         return layer
     pieces = layer_name.split("/")
@@ -84,38 +88,46 @@ def get_nested_layer(layer, layer_name):
             raise RuntimeError(f"Unexpected layer type '{type(layer)}', code was expecting Encoder or Decoder.")
     else:
         next_layer = getattr(layer, next_layer_name)
-    return get_nested_layer(next_layer, remaining_layers_names)
+    return get_transformer_layer(next_layer, remaining_layers_names)
 
 def sync_fp_weights_with_quantized_values(model, qs):
     """Model weights are set as dequantized alphas and bits"""
     for key in qs.keys():
-        layer = get_nested_layer(model, key)
+        layer = get_transformer_layer(model, key)
         deq_weights = [q.dequantize() if isinstance(q, QuantizedWeights) else q for q in qs[key]]
         if len(layer.get_weights()) != len(deq_weights):
             raise RuntimeError(f"Layer '{key}' show incorrect number of weights: {len(layer.get_weights())} != {len(deq_weights)}")
         layer.set_weights(deq_weights)
-        print(f"Weights for '{key}' set to quantized-dequantized equivalent.")
+        io_utils.print_msg(f"Weights for '{key}' set to quantized-dequantized equivalent.")
 
 
 class QuantizedWeights():
-    def __init__(self, weight, num_bits=3, transpose=False, test_integrity=True):
-        self.test_integrity = test_integrity
+    """Defines quantize-dequantize operations of FP weights"""
+    def __init__(self, weight=None, num_bits=3, transpose=False, test_integrity=True, w_orig_shape=None, w_2d_shape=None, bits=None, alphas=None, shape=None):
         self.num_bits = num_bits
         self.transpose = transpose
-        self.w_orig_shape = list(weight.shape)
-
-        if tf.is_tensor(weight):
-            weight = weight.numpy()
-        _weight = weight.copy() # [R, C]
-        if len(_weight.shape) < 2:
-            raise RuntimeError("QuantizedWeight class cannot handle 1-D vectors")
-        elif len(_weight.shape) > 2:
-            _weight = tf.reshape(_weight, [-1, self.w_orig_shape[-1]])
+        self.test_integrity = test_integrity
         
-        if self.transpose:
-            _weight = tf.transpose(_weight)
-        self.w_2d_shape = list(_weight.shape)
-        self.quantize(_weight)
+        if weight is not None:
+            self.w_orig_shape = list(weight.shape)
+            if tf.is_tensor(weight):
+                weight = weight.numpy()
+            _weight = weight.copy() # [R, C]
+            if len(_weight.shape) < 2:
+                raise RuntimeError("QuantizedWeight class cannot handle 1-D vectors")
+            elif len(_weight.shape) > 2:
+                _weight = tf.reshape(_weight, [-1, self.w_orig_shape[-1]])
+            
+            if self.transpose:
+                _weight = tf.transpose(_weight)
+            self.w_2d_shape = list(_weight.shape)
+            self.quantize(_weight)
+        else:
+            self.w_orig_shape = w_orig_shape
+            self.w_2d_shape = w_2d_shape
+            self.bits = bits
+            self.alphas = alphas
+            self.shape = shape
 
     def quantize(self, weight):
         """Quantize FP weights to bits and alphas"""
@@ -162,20 +174,80 @@ class QuantizedWeights():
 
         return weight
 
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
+
+    def to_dict(self):
+        return vars(self)
+
 
 class CheckpointQuantizer(tf.keras.callbacks.ModelCheckpoint):
-    def __init__(self, *args, **kwargs):
+    """Keras Callback that quantizes and syncs transformer model on every epoch."""
+    def __init__(self, *args, val_data=None, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.save_freq != "epoch":
+        if self.save_freq != "epoch" or not self.save_best_only:
             raise RuntimeError(
-                "CheckpointQuantizer only supports epoch frequency")
+                "CheckpointQuantizer only supports epoch frequency and save_best_only=True")
+        self.quantized_weights = None
+        self.validation_data = None
 
-    def on_epoch_end(self, epoch, logs=None):
-        self.epochs_since_last_save += 1
+    def _quantize_and_sync_model(self):
         ws = collect_transformer_weights(self.model)
         qs = quantize_transformer_weights(ws)
         sync_fp_weights_with_quantized_values(self.model, qs)
-        self._save_model(epoch=epoch, batch=None, logs=logs)
+        self.quantized_weights = qs
+
+    def _quantized_weights_to_dict(self):
+        d = {}
+        if not self.quantized_weights:
+            raise RuntimeError("Quantized weights not yet available.")
+        for key, qs in self.quantized_weights.items():
+            _qs = []
+            for q in qs:
+                if isinstance(q, QuantizedWeights):
+                    _qs.append(q.to_dict())
+                else:
+                    _qs.append(q)
+            d[key] = _qs
+        return d
+
+    def _save_quantized_model_weights(self, filepath):
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        q_model = self._quantized_weights_to_dict()
+        np.save(filepath, q_model)
 
     def _save_model(self, epoch, batch, logs):
-        assert 0
+        """Quantizes, re-evaluates model and save weights.
+        
+        NOTE: only supports save_frequency="epoch" and save_best_only=True
+        """
+        if self.epochs_since_last_save < self.period:
+            return
+        
+        self.epochs_since_last_save = 0
+        filepath = self._get_file_path(epoch, batch, logs)
+        filepath += ".bcq.npy"
+
+        # Quantize weights and also sync FP weights with quantized equivalent.
+        self._quantize_and_sync_model()
+        # Re-evaluate using quantized model.
+        logs = self.model.evaluate(self.validation_data, return_dict=True)
+
+        current = logs.get(self.monitor)
+        if current is None:
+            io_utils.print_msg(
+                "Can save best model only with %s available, skipping.", self.monitor)
+            return            
+
+        if not self.monitor_op(current, self.best):
+            if self.verbose > 0:
+                io_utils.print_msg(
+                    f"\nEpoch {epoch + 1}: {self.monitor} did not improve from {self.best:.5f}")
+            return
+
+        if self.verbose > 0:
+            io_utils.print_msg(f"\nEpoch {epoch + 1}: {self.monitor} improved from {self.best:.5f} to {current:.5f}, saving model to {filepath}")
+        
+        self.best = current
+        self._save_quantized_model_weights(filepath)
