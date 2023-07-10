@@ -31,20 +31,26 @@ def prepare_model(hparams, tokenizers):
     return model
 
 
-def test_model(test_examples, tokenizers, model, ckpt_dir, quantize=False):
-    latest = tf.train.latest_checkpoint(ckpt_dir)
-    model.load_weights(latest)
-    translator = Translator(tokenizers, model)
+def test_model(test_examples, tokenizers, model, ckpt_dir, num_tc=200, quantize=False):    
     if not quantize:
+        latest = latest_quantized_model_ckpt(ckpt_dir)
+        load_quantized_weights(model, latest)
         output_filepath = "output.txt"
         ref_filepath = "ref.txt"
     else:
+        latest = tf.train.latest_checkpoint(ckpt_dir)
+        model.load_weights(latest)
         output_filepath = "output.q.txt"
         ref_filepath = "ref.q.txt"
+    
+    translator = Translator(tokenizers, model)
     refs = []
     hyps = []
+    
     with open(output_filepath, "w") as out_f, open(ref_filepath, "w") as ref_f:
-        for pt_example, en_example in test_examples:
+        for i, (pt_example, en_example) in enumerate(test_examples):
+            if i >= num_tc:
+                break    
             en_output, _, _ = translator(pt_example)
             pt_example = pt_example.numpy().decode('utf-8').strip()
             en_output = en_output.numpy().decode('utf-8').strip()
@@ -95,7 +101,6 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
     else:
         # Quantization
         ckpt_dir = quantize_dir
-        
         latest = latest_quantized_model_ckpt(quantize_dir)
         # If this is the start of quantization - continue from pretrained weigths
         if not latest:
