@@ -3,6 +3,7 @@ import pathlib
 import nltk
 
 from typing import Dict
+from glob import glob
 
 import tensorflow as tf
 
@@ -10,7 +11,7 @@ from transformer.model import Transformer
 from transformer.data import load_pten_tokenizers, load_pten_data, make_batches
 from transformer.utils import CustomSchedule, masked_loss, masked_accuracy, Translator
 
-from quantize_utils import CheckpointQuantizer
+from quantize_utils import CheckpointQuantizer, load_quantized_weights
 
 SCRIPT_DIR = pathlib.Path(__file__).parent.resolve()
 
@@ -59,6 +60,11 @@ def test_model(test_examples, tokenizers, model, ckpt_dir, quantize=False):
     bleu_score = nltk.translate.bleu_score.corpus_bleu(refs, hyps)
     return bleu_score
 
+def latest_quantized_model_ckpt(quantize_dir):
+    candidates = sorted(glob(quantize_dir + "/*.bcq.npy"))
+    if not candidates:
+        return None
+    return candidates[-1]
 
 def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quantize_dir: str = "trained_models/quantized", epochs: int = 30, quantize: bool = False):
     test_examples, tokenizers, train_batches, val_batches = prepare_dataset()
@@ -76,6 +82,7 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
     initial_epoch = 0
     ckpt_dir = pretrain_dir
     if not quantize:
+        # Pretraining
         latest = tf.train.latest_checkpoint(pretrain_dir)
         if latest:
             model.load_weights(latest)
@@ -86,25 +93,26 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
         callback_cls = tf.keras.callbacks.ModelCheckpoint
         print(f"Pre-training. Checkpoints will be saved to '{ckpt_dir}'")
     else:
+        # Quantization
         ckpt_dir = quantize_dir
-        # TODO: If previous ckpt from quantization exists - continue from last quantized checkpoint.
-        latest = tf.train.latest_checkpoint(quantize_dir)
         
+        latest = latest_quantized_model_ckpt(quantize_dir)
         # If this is the start of quantization - continue from pretrained weigths
         if not latest:
             latest = tf.train.latest_checkpoint(pretrain_dir)
             if not latest:
                 raise RuntimeError(
-                    "Cannot quantize model, no pretrained weights found in: {pretrain_dir}")
+                    f"Cannot quantize model, no pretrained weights found in: {pretrain_dir}")
+            # Loads pretrained weights
+            model.load_weights(latest)
             print(
                 f"Quantization will initialize from finetuned checkpoint in: {latest}")
         else:
-            initial_epoch = int(latest[-4:])
+            # If previous ckpt from quantization exists - continue from last quantized checkpoint.
+            initial_epoch = int(latest.replace(".bcq.npy", "")[-4:])
+            load_quantized_weights(model, latest)
             print(
                 f"Continuing quantization from latest checkpoint in: {latest} @ epoch {initial_epoch}")
-
-        # Loads either pretrained or finetuned weights
-        model.load_weights(latest)
 
         callback_cls = CheckpointQuantizer
         print(f"Quantization - checkpoints will be saved to '{ckpt_dir}'")
@@ -125,7 +133,6 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
             train_batches,
             initial_epoch=initial_epoch,
             epochs=epochs,
-            steps_per_epoch=800, # NOTE: pNR equivalent
             validation_data=val_batches,
             callbacks=[ckpt_callback],
         )

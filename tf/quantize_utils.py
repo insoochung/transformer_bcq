@@ -100,6 +100,22 @@ def sync_fp_weights_with_quantized_values(model, qs):
         layer.set_weights(deq_weights)
         io_utils.print_msg(f"Weights for '{key}' set to quantized-dequantized equivalent.")
 
+def load_quantized_weights(model, quantized_ckpt_path):
+    """Load model weights from a .bcq.npy checkpoint file"""
+    _ = model([np.array([[0]]), np.array([[0]])])
+    qs = np.load(quantized_ckpt_path, allow_pickle=True).item()
+    # Saved .bcq.npy weights are nested dictionaries of np.array's.
+    # This loop converts the inner arrays into QuantizedWeights instances.
+    for key, q in qs.items():
+        decoded = []
+        for cand in q:
+            if isinstance(cand, dict): # If dict, convert to a QuantizedWeights instance
+                decoded.append(QuantizedWeights.from_dict(cand))
+            else: # If np.array no need to decode
+                decoded.append(cand)
+        qs[key] = decoded
+
+    sync_fp_weights_with_quantized_values(model, qs)
 
 class QuantizedWeights():
     """Defines quantize-dequantize operations of FP weights"""
@@ -224,7 +240,7 @@ class CheckpointQuantizer(tf.keras.callbacks.ModelCheckpoint):
         """
         if self.epochs_since_last_save < self.period:
             return
-        
+        io_utils.print_msg(f"Pre-quantization logs: {logs}")
         self.epochs_since_last_save = 0
         filepath = self._get_file_path(epoch, batch, logs)
         filepath += ".bcq.npy"
