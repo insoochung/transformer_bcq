@@ -33,13 +33,13 @@ def prepare_model(hparams, tokenizers):
 
 def test_model(test_examples, tokenizers, model, ckpt_dir, num_tc=200, quantize=False):    
     if not quantize:
-        latest = latest_quantized_model_ckpt(ckpt_dir)
-        load_quantized_weights(model, latest)
+        latest = tf.train.latest_checkpoint(ckpt_dir)
+        model.load_weights(latest)
         output_filepath = "output.txt"
         ref_filepath = "ref.txt"
     else:
-        latest = tf.train.latest_checkpoint(ckpt_dir)
-        model.load_weights(latest)
+        latest = latest_quantized_model_ckpt(ckpt_dir)
+        load_quantized_weights(model, latest)
         output_filepath = "output.q.txt"
         ref_filepath = "ref.q.txt"
     
@@ -72,7 +72,7 @@ def latest_quantized_model_ckpt(quantize_dir):
         return None
     return candidates[-1]
 
-def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quantize_dir: str = "trained_models/quantized", epochs: int = 30, quantize: bool = False):
+def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quantize_dir: str = "trained_models/quantized", epochs: int = 26, quantize: bool = False):
     test_examples, tokenizers, train_batches, val_batches = prepare_dataset()
 
     model = prepare_model(hparams, tokenizers)
@@ -142,5 +142,5 @@ def train(hparams: Dict, pretrain_dir: str = "trained_models/pretrained", quanti
             callbacks=[ckpt_callback],
         )
 
-    bleu_score = test_model(test_examples, tokenizers, model, ckpt_dir)
+    bleu_score = test_model(test_examples, tokenizers, model, ckpt_dir, quantize=quantize)
     print(f"Test BLEU: {bleu_score}")
