@@ -4,7 +4,9 @@
 
 Binary-code-based quantization (BCQ) is a powerful tool for transformers. It allows 1) extremely low bit quantization, and 2) hassle-free quantized inference (i.e. direct matmul between quantized weights and full precision activation is possible).
 
-*Note:* This repo mainly replicates some parts of BCQ method discussed in [Chung & Kim et al. (2020)](https://aclanthology.org/2020.findings-emnlp.433/). The utilized dataset in this repo is different from the paper and code here does not fully include all the optimized inference functionalities. However, this repo should provide a good starting point for application of BCQ to your own use case.
+For reference, [Chung & Kim et al. (2020)](https://aclanthology.org/2020.findings-emnlp.433/) demonstrated 3.5× speedup, 8.3× runtime memory reduction and 11.8× model size compression with sub-3bit transformers on the on-device translation task — while preserving BLEU score.
+
+*Note:* This repo mainly replicates some parts of BCQ method discussed in aforementioned research. The utilized dataset in this repo is different from the paper and code here does not fully include all the optimized inference functionalities. However, this repo should provide a good starting point for application of BCQ to your own use case.
 
 # Binary-code-based quantization?
 
@@ -40,7 +42,7 @@ Testing, results and references are written to output.txt and ref.txt
 Test BLEU: 0.2897125496960812
 ```
 
-3. The [default configuration](/tf/hparams/small.json) results in 117MB checkpoints, but as this is a 10+M parameters the actual weights should be somewhere around 41MB. The difference comes from auxiliary parameters that tensorflow logs for various training functionality.
+3. The [default configuration](/tf/hparams/small.json) results in 117MB checkpoints, but as this is a 10+M parameters the actual weights should be somewhere around **41MB**. The difference comes from auxiliary parameters that tensorflow saves.
 
 ```bash
 $ du -h trained_models/pretrained/*
@@ -105,8 +107,9 @@ $ du -h trained_models/quantized/*
 Code here is does not implement the full set of functionality discussed in [Chung & Kim et al. (2020)](https://aclanthology.org/2020.findings-emnlp.433/). Here are some of the things you should consider:
 
 1. Depending on your dataset size, per-epoch quantization may be too often or too rare. Generally, quantizing every 500 to 2000 batches should work well. If your dataset is too small or too large, modulate the quantization frequency. This can be easily done by providing `steps_per_epoch` argument to `model.fit` method in the [`train` method here](/tf/train_utils.py).
-2. Transformer code used here is based off [this tutorial](https://www.tensorflow.org/text/tutorials/nmt_with_attention). The training part of transformer is fully implemented, but the inference scheme is non-cached which is extremely slow. This is why the example code provided only uses 200 sentences for BLEU evaluation. For a more reliable evaluation, cached decoder steps should be implemented.
+2. Transformer code used here is based off [this tutorial](https://www.tensorflow.org/text/tutorials/nmt_with_attention). The training part of transformer is fully implemented, but the inference scheme is non-cached which is extremely slow. This is why the example code provided only uses 200 sentences for BLEU evaluation. For a more reliable evaluation a larger sample size should be used for testing, in which case you might need to implement caching in decoder steps - so it doesn't take forever.
 3. No on-device inference code. Fast quantized inference is a huge advantage of BCQ - but it will require a separate inference implementation that can be compiled and run on your target device to actual see the speed up.
+4. **Syncing FP values to dequantized BCQ parameters is important!** If you are going to implement a similar measure for different ML frameworks, I suggest that you look into checkpointing functions. They are usually where evaluation, weight saving happens which makes them adequate spot to quantize > sync FP-BCQ weights > then evaluate FP weights. The synced FP weights should provided the exact same outcome as quantized inference, making it convinient to evaluate BCQ weights. But there are so many ways to mess this up - so be careful!
 
 
 # Files
