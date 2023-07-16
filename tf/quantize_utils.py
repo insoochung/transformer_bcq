@@ -102,9 +102,11 @@ def sync_fp_weights_with_quantized_values(model, qs):
 
 def load_quantized_weights(model, quantized_ckpt_path):
     """Load model weights from a .bcq.npy checkpoint file"""
+    
+    # Run dummy input to compile model weights
     _ = model([np.array([[0]]), np.array([[0]])])
-    qs = np.load(quantized_ckpt_path, allow_pickle=True).item()
     # Saved .bcq.npy weights are nested dictionaries of np.array's.
+    qs = np.load(quantized_ckpt_path, allow_pickle=True).item()
     # This loop converts the inner arrays into QuantizedWeights instances.
     for key, q in qs.items():
         decoded = []
@@ -240,7 +242,8 @@ class CheckpointQuantizer(tf.keras.callbacks.ModelCheckpoint):
         """
         if self.epochs_since_last_save < self.period:
             return
-        io_utils.print_msg(f"Pre-quantization logs: {logs}")
+        if self.verbose > 0:
+            io_utils.print_msg(f"Pre-quantization logs: {logs}")
         self.epochs_since_last_save = 0
         filepath = self._get_file_path(epoch, batch, logs)
         filepath += ".bcq.npy"
@@ -251,7 +254,7 @@ class CheckpointQuantizer(tf.keras.callbacks.ModelCheckpoint):
         logs = self.model.evaluate(self.validation_data, return_dict=True)
 
         current = logs.get(self.monitor)
-        if current is None:
+        if current is None and self.verbose > 0:
             io_utils.print_msg(
                 "Can save best model only with %s available, skipping.", self.monitor)
             return            
